@@ -44,13 +44,20 @@ version = re.search(r'^version:\s*([\w.+-]+)\s*$',
                     re.MULTILINE).group(1)
 output = root / 'dist' / 'ohos'
 output.mkdir(parents=True, exist_ok=True)
-for name in ('entry-default-signed.hap', 'entry-default-unsigned.hap'):
-    source = root / 'build' / 'ohos' / 'hap' / name
+artifacts = (
+    # hvigor 打包的未签名中间产物，用作 Release 上传包
+    (root / 'ohos' / 'entry' / 'build' / 'default' / 'outputs' / 'default'
+     / 'entry-default-unsigned.hap', ''),
+    # flutter 工具拷出的签名包，本机调试安装用
+    (root / 'build' / 'ohos' / 'hap' / 'entry-default-signed.hap', '-signed'),
+)
+missing = []
+for source, suffix in artifacts:
     if not source.exists():
+        missing.append(source.name)
         continue
-    target = output / f'{variant.slug}-{version}-ohos-arm64.hap'
+    target = output / f'{variant.slug}-{version}-ohos-arm64{suffix}.hap'
     shutil.copy2(source, target)
     print(str(target))
-    break
-else:
-    raise SystemExit('未找到构建产物 HAP。')
+if missing:
+    raise SystemExit('未找到构建产物：' + '、'.join(missing))
