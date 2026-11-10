@@ -201,10 +201,6 @@ class ExplorePageState extends State<ExplorePage> {
       key: ValueKey(explore.source?.id),
       index: index,
       count: tabs.length,
-      ready: switch (explore.feed) {
-        final feed? => feed.items.isNotEmpty || !feed.loading,
-        null => true,
-      },
       onSwitch: (index) => explore.select(tabs[index].id),
       onEnter: _toTop,
       child: child,

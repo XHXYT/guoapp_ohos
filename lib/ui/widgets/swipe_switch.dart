@@ -12,7 +12,6 @@ class SwipeSwitch extends StatefulWidget {
     required this.count,
     required this.onSwitch,
     this.enabled = true,
-    this.ready = true,
     this.onEnter,
     required this.child,
   });
@@ -20,7 +19,6 @@ class SwipeSwitch extends StatefulWidget {
   final int count;
   final ValueChanged<int> onSwitch;
   final bool enabled;
-  final bool ready;
   final VoidCallback? onEnter;
   final Widget child;
 
@@ -40,23 +38,25 @@ class _SwipeSwitchState extends State<SwipeSwitch>
   Widget? _leaving;
   int _run = 0;
   int _direction = 1;
-  Timer? _wait;
+  bool _pending = false;
 
   @override
   void didUpdateWidget(SwipeSwitch oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.index != widget.index) {
-      _leaving ??= oldWidget.child;
-      _direction = widget.index > oldWidget.index ? 1 : -1;
-      widget.ready ? _proceed() : _hold();
-    } else if (_wait != null && widget.ready) {
+    if (oldWidget.index == widget.index) return;
+    _leaving ??= oldWidget.child;
+    _direction = widget.index > oldWidget.index ? 1 : -1;
+    if (_pending) return;
+    _pending = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_pending) return;
+      _pending = false;
       _proceed();
-    }
+    });
   }
 
   @override
   void dispose() {
-    _wait?.cancel();
     _offset.dispose();
     _opacity.dispose();
     super.dispose();
@@ -66,18 +66,7 @@ class _SwipeSwitchState extends State<SwipeSwitch>
 
   bool get _switching => _leaving != null;
 
-  void _hold() {
-    _run++;
-    _wait?.cancel();
-    _wait = Timer(const Duration(milliseconds: 1500), _proceed);
-    final duration = Motion.of(context, Motion.medium);
-    unawaited(_offset.animateTo(0, duration: duration, curve: Motion.enter));
-    unawaited(_opacity.animateTo(.5, duration: duration, curve: Motion.enter));
-  }
-
   void _proceed() {
-    _wait?.cancel();
-    _wait = null;
     if (mounted) unawaited(_play(_direction));
   }
 
