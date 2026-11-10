@@ -4,12 +4,12 @@
 
 # 红果鉴
 
-Flutter 多端独立短剧 / 影视应用，手机、平板、电脑和电视分别适配
+Flutter 多端独立短剧 / 影视应用，手机、平板、电脑、电视和鸿蒙设备分别适配
 
-[![Release](https://img.shields.io/github/v/release/Xanerix/guoapp?style=flat-square&color=3d4656)](../../releases)
+[![Release](https://img.shields.io/github/v/release/XHXYT/guoapp_ohos?style=flat-square&color=3d4656)](../../releases)
 [![License](https://img.shields.io/badge/license-GPL--3.0-3d4656?style=flat-square)](LICENSE)
 ![Flutter](https://img.shields.io/badge/Flutter-3.47.9-02569B?style=flat-square&logo=flutter&logoColor=white)
-![Platforms](https://img.shields.io/badge/platform-Android%20%7C%20iOS%20%7C%20Windows%20%7C%20macOS-8fa3bc?style=flat-square)
+![Platforms](https://img.shields.io/badge/platform-Android%20%7C%20iOS%20%7C%20Windows%20%7C%20macOS%20%7C%20HarmonyOS-8fa3bc?style=flat-square)
 
 [下载](#安装) · [功能](#功能) · [站源](#站源) · [隐私](#检查更新与使用统计) · [开发](#开发)
 
@@ -17,12 +17,12 @@ Flutter 多端独立短剧 / 影视应用，手机、平板、电脑和电视分
 
 ---
 
-本项目改编自 [fish2018](https://github.com/fish2018) 的源码，分两个版本发布：
+本项目改编自 [fish2018](https://github.com/fish2018) 的源码，fork 自 [Xanerix/guoapp](https://github.com/Xanerix/guoapp) 并新增鸿蒙 HarmonyOS 适配，分两个版本发布：
 
-| 版本 | 站源 | 安装包前缀 |
-| --- | --- | --- |
-| **红果鉴** | 只含红果站源 | `hongguojian-` |
-| **全站源版** | 含全部站源，可在设置里逐个开关 | `zhenguojian-` |
+| 版本 | 站源 | 分支 | 安装包前缀 | 鸿蒙包名 |
+| --- | --- | --- | --- | --- |
+| **红果鉴** | 只含红果站源 | `main` | `hongguojian-` | `com.guoapp.phoenix` |
+| **小果影视**（全站源版） | 含全部站源，可在设置里逐个开关 | `xiaoguo` | `zhenguojian-` | `com.guoapp.all` |
 
 ## 功能
 
@@ -101,6 +101,7 @@ Flutter 多端独立短剧 / 影视应用，手机、平板、电脑和电视分
 | Windows 10/11 x64 | 安装包 `*-setup.exe`，默认安装到当前用户、无需管理员权限；或便携 ZIP，解压后运行 `hongguojian.exe` / `zhenguojian.exe`，保留所有 DLL 与 `data` 目录 |
 | iOS 15.1+ | 未签名 IPA，需自行签名或用 iloader 等工具侧载 |
 | macOS 12+ | 通用 dmg（Apple 芯片与 Intel），打开后拖入「应用程序」；未经公证，首次打开前需解除隔离（见下方） |
+| HarmonyOS 5+（arm64） | hap 包；两个版本包名不同，可同时安装；未提供现成包时需自行构建并签名（见 [开发](#开发)） |
 
 > [!TIP]
 > Android 安装提示 `INSTALL_FAILED_NO_MATCHING_ABIS` 表示 APK 与设备架构不匹配，请换对应架构的安装包。
@@ -143,4 +144,16 @@ Flutter 多端独立短剧 / 影视应用，手机、平板、电脑和电视分
 
 ## 开发
 
-构建、测试、架构和发布流程见 [DEVELOPMENT.md](DEVELOPMENT.md)，版本更新记录见 [CHANGELOG.md](CHANGELOG.md)。
+通用构建、测试、架构和发布流程见 [DEVELOPMENT.md](DEVELOPMENT.md)，版本更新记录见 [CHANGELOG.md](CHANGELOG.md)。
+
+### 鸿蒙构建
+
+- 依赖：[OpenHarmony SIG 鸿蒙 Flutter SDK](https://gitcode.com/openharmony-sig/flutter_flutter)（替代原版 flutter 命令）、DevEco Studio（含 ohos SDK）、Go、Python 3.10+。
+- 首次构建先用 DevEco Studio 打开 `ohos` 工程，在 File › Project Structure › Signing Configs 勾选 Automatically generate signature 生成调试签名；仓库里的 `ohos/build-profile.json5` 只是空模板，签名材料不入库。
+- `scripts/build_ohos.py` 按 `ohos/AppScope/app.json5` 的包名自动推导版本开关与应用名，Go 核心、dart-define 与产物命名一次对齐：
+
+```sh
+python scripts/build_ohos.py   # 一键出包，产物在 dist/ohos/
+```
+
+- 红果鉴在 `main` 分支构建，小果影视切到 `xiaoguo` 分支构建；换分支构建会重编 `ohos/entry/libs` 下的 Go 核心。
