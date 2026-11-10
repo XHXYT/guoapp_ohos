@@ -15,7 +15,7 @@ class DownloadConverter extends ChangeNotifier {
   DownloadConverter(this.repository, this.downloads, {MediaExecutor? executor})
     : executor = executor ?? FFmpegExecutor() {
     downloads.addListener(_sync);
-    if (Platform.isIOS) {
+    if (Platform.isIOS || Platform.isOhos) {
       _lifecycle = AppLifecycleListener(onPause: _suspend, onResume: _resume);
     }
     _sync();

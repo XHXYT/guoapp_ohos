@@ -1,6 +1,6 @@
 import 'dart:io';
 
-import 'package:file_picker/file_picker.dart';
+import 'package:file_picker_ohos/file_picker_ohos.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
@@ -58,8 +58,8 @@ class _StorageViewState extends State<StorageView> {
   }
 
   Future<String?> _pickParent() async {
-    if (!Platform.isAndroid && !Platform.isIOS) {
-      return FilePicker.getDirectoryPath(dialogTitle: '选择下载保存位置');
+    if (!Platform.isAndroid && !Platform.isIOS && !Platform.isOhos) {
+      return FilePicker.platform.getDirectoryPath(dialogTitle: '选择下载保存位置');
     }
     final support = await getApplicationSupportDirectory();
     final directories = <String, String>{support.path: '应用内部存储'};
@@ -70,6 +70,9 @@ class _StorageViewState extends State<StorageView> {
             ? '设备共享存储（应用目录）'
             : 'SD 卡 ${index + 1}（应用目录）';
       }
+    } else if (Platform.isOhos) {
+      final documents = await getApplicationDocumentsDirectory();
+      directories[documents.path] = '应用文档目录';
     } else {
       final documents = await getApplicationDocumentsDirectory();
       directories[documents.path] = '文件 App 可见目录';

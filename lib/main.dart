@@ -92,7 +92,7 @@ class _AppBootstrapState extends State<AppBootstrap>
     if (state == AppLifecycleState.resumed && Platform.isAndroid) {
       unawaited(_refreshDevice());
     }
-    if (!Platform.isIOS) return;
+    if (!Platform.isIOS && !Platform.isOhos) return;
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
       unawaited(

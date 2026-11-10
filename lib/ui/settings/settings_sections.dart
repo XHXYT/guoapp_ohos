@@ -309,6 +309,7 @@ class SettingsSection extends StatelessWidget {
         ],
       ),
       if (Platform.isIOS) const _Note('iOS 下载和媒体处理需要保持应用在前台；切到后台会暂停，回到前台后可继续。'),
+      if (Platform.isOhos) const _Note('鸿蒙下载和媒体处理需要保持应用在前台；切到后台会暂停，回到前台后可继续。'),
     ];
   }
 

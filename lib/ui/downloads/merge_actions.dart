@@ -1,6 +1,6 @@
 import 'dart:io';
 
-import 'package:file_picker/file_picker.dart';
+import 'package:file_picker_ohos/file_picker_ohos.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
@@ -51,17 +51,16 @@ Future<List<String?>?> _destinations(List<List<DownloadJob>> groups) async {
     }
     return [for (final _ in groups) null];
   }
-  if (Platform.isIOS) return [for (final _ in groups) null];
+  if (Platform.isIOS || Platform.isOhos) return [for (final _ in groups) null];
   if (groups.length == 1) {
-    final saved = await FilePicker.saveFile(
+    final saved = await FilePicker.platform.saveFile(
       fileName: mergeJobsFileName(groups.single),
       bytes: Uint8List(0),
-      mimeType: 'video/mp4',
       dialogTitle: '保存合并视频',
     );
-    return saved == null ? null : [saved.toFilePath()];
+    return saved == null ? null : [saved];
   }
-  final directory = await FilePicker.getDirectoryPath(
+  final directory = await FilePicker.platform.getDirectoryPath(
     dialogTitle: '选择合并视频的保存文件夹',
   );
   if (directory == null) return null;

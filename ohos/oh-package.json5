@@ -1,0 +1,21 @@
+{
+  "modelVersion": "5.1.0",
+  "name": "duanju_app",
+  "version": "1.0.0",
+  "description": "Please describe the basic information.",
+  "main": "",
+  "author": "",
+  "license": "",
+  "dependencies": {
+    // ffmpeg-kit har(1.0.2-rc.3) 构建时的 aki 版本是 1.2.25（见其
+    // oh-package.json5 metadata.dependencyPkgVersion），必须钉死，
+    // 否则 ohpm 解析到最新 aki 会导致 napi 绑定 ABI 错配崩溃。
+    "@ohos/aki": "1.2.25"
+  },
+  "overrides": {
+    "@ohos/aki": "1.2.25"
+  },
+  "devDependencies": {
+    "@ohos/hypium": "1.0.6"
+  }
+}

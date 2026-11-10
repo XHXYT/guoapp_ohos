@@ -206,14 +206,16 @@ Future<String> saveMerge(DownloadMerge merge, MergeTask task) async {
     await merge.write(file, file: file);
     return '已保存到 $file';
   }
-  if (Platform.isIOS) {
+  if (Platform.isIOS || Platform.isOhos) {
     final directory = Directory(
       path.join((await getApplicationDocumentsDirectory()).path, '合并视频'),
     );
     await directory.create(recursive: true);
     final file = unusedMergeFile(directory.path, merge.fileName);
     await merge.write(file, file: file);
-    return '已保存到「文件」App 里本应用的「合并视频」文件夹';
+    return Platform.isIOS
+        ? '已保存到「文件」App 里本应用的「合并视频」文件夹'
+        : '已保存到应用文档目录的「合并视频」文件夹';
   }
   if (!Platform.isAndroid) throw AppFailure('没有选择保存位置');
   final folder = safeFileName(task.drama.title);

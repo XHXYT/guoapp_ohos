@@ -29,7 +29,7 @@ typedef _DartFree = void Function(Pointer<Utf8>);
 
 String _nativeRequest(String body) {
   final DynamicLibrary library;
-  if (Platform.isAndroid) {
+  if (Platform.isAndroid || Platform.isOhos) {
     library = DynamicLibrary.open('libduanju_core.so');
   } else if (Platform.isWindows) {
     library = DynamicLibrary.open(
@@ -38,7 +38,7 @@ String _nativeRequest(String body) {
   } else if (Platform.isIOS || Platform.isMacOS) {
     library = DynamicLibrary.process();
   } else {
-    throw UnsupportedError('当前支持 Android、iOS、Windows 和 macOS');
+    throw UnsupportedError('当前支持 Android、iOS、Windows、macOS 和 HarmonyOS');
   }
   final request = library.lookupFunction<_NativeRequest, _DartRequest>(
     'DuanjuRequest',
@@ -644,7 +644,9 @@ class NativeRepository extends AppRepository {
         );
       }
       throw AppFailure('站源响应超时，请重试');
-    } catch (_) {
+    } catch (error) {
+      // ignore: avoid_print
+      print('core call failed: $error');
       throw AppFailure('本地核心加载失败，请使用完整安装包重新安装');
     }
   }
