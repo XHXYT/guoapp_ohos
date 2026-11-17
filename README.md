@@ -21,8 +21,8 @@ Flutter 多端独立短剧 / 影视应用，手机、平板、电脑、电视和
 
 | 版本 | 站源 | 分支 | 安装包前缀 | 鸿蒙包名 |
 | --- | --- | --- | --- | --- |
-| **红果鉴** | 只含红果站源 | `main` | `hongguojian-` | `com.guoapp.phoenix` |
-| **小果影视**（全站源版） | 含全部站源，可在设置里逐个开关 | `xiaoguo` | `zhenguojian-` | `com.guoapp.all` |
+| **小果影视**（全站源版） | 含全部站源，可在设置里逐个开关 | `xiaoguo` | `guoapp-` | `com.guoapp.all` |
+| **红果鉴**（停止更新） | 只含红果站源，停留在 1.0.8+108 | `main` | `hongguojian-` | `com.guoapp.phoenix` |
 
 安装包内置红果站源，其余站源以模块形式在 **我的 › 模块** 安装，操作见 [使用说明](#使用说明)。
 
@@ -188,10 +188,11 @@ Flutter 多端独立短剧 / 影视应用，手机、平板、电脑、电视和
 
 - 依赖：[OpenHarmony SIG 鸿蒙 Flutter SDK](https://gitcode.com/openharmony-sig/flutter_flutter)（替代原版 flutter 命令）、DevEco Studio（含 ohos SDK）、Go、Python 3.10+。
 - 首次构建先用 DevEco Studio 打开 `ohos` 工程，在 File › Project Structure › Signing Configs 勾选 Automatically generate signature 生成调试签名；仓库里的 `ohos/build-profile.json5` 只是空模板，签名材料不入库。
-- `scripts/build_ohos.py` 按 `ohos/AppScope/app.json5` 的包名自动推导版本开关与应用名，Go 核心、dart-define 与产物命名一次对齐：
+- `scripts/build_ohos.py` 编译 Go 核心并调用 `flutter build hap`；内置模块用 `--bundle <模块目录>`（可多次指定）或环境变量 `BUNDLED_MODULES` 指定，与 `build_native.py` 规则一致：
 
 ```sh
 python scripts/build_ohos.py   # 一键出包，产物在 dist/ohos/
 ```
 
-- 红果鉴在 `main` 分支构建，小果影视切到 `xiaoguo` 分支构建；换分支构建会重编 `ohos/entry/libs` 下的 Go 核心。
+- 站源已模块化，仓库不含站源代码；需要内置红果模块时先检出 `guoapp-modules/hongguo`，再 `--bundle bundled-modules/hongguo`，其余站源由用户在应用内模块商店安装。
+- `main` 分支（红果鉴）停留在旧架构 1.0.8+108，不再同步上游；`xiaoguo` 分支是唯一维护分支，按单一应用（小果影视）发布。
