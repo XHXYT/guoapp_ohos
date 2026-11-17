@@ -7,23 +7,18 @@ import subprocess
 import sys
 from pathlib import Path
 
-from app_build import BuildVariant
+from app_build import app
 
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(
-    description='构建鸿蒙 HAP；按 ohos/AppScope/app.json5 的包名自动选择红果鉴或全站源版，'
-                '界面与 Go 核心的编译开关保持一致，避免混装原生库。')
+    description='构建鸿蒙 HAP；内置模块用 --bundle 或环境变量 BUNDLED_MODULES 指定，'
+                '规则与 build_native.py 一致（相对路径以仓库根目录为准）。')
 parser.add_argument('--debug', action='store_true', help='构建 debug 模式；默认 release')
+parser.add_argument('--bundle', action='append', default=[], help='内置模块目录，可多次指定；也可用逗号分隔写在环境变量 BUNDLED_MODULES 里')
 options = parser.parse_args()
 
-app = json.loads((root / 'ohos/AppScope/app.json5').read_text(encoding='utf-8'))['app']
-bundle = app['bundleName']
-display = next(item['value'] for item in json.loads(
-    (root / 'ohos/AppScope/resources/base/element/string.json').read_text(encoding='utf-8'))['string']
-    if item['name'] == 'app_name')
-all_sources = bundle != 'com.guoapp.phoenix'
-print(f'构建变体：{display}（{bundle}，all_sources={all_sources}）')
-variant = BuildVariant(all_sources)
+info = json.loads((root / 'ohos/AppScope/app.json5').read_text(encoding='utf-8'))['app']
+print(f'构建应用：{app.display_name}（{info["bundleName"]}）')
 
 env = os.environ.copy()
 env.setdefault('GOPROXY', 'https://goproxy.cn,direct')
@@ -31,13 +26,14 @@ env.setdefault('GOSUMDB', 'off')
 flutter = shutil.which('flutter')
 if not flutter:
     raise SystemExit('请先将 Flutter SDK 的 bin 目录加入 PATH。')
-subprocess.run([sys.executable, str(root / 'scripts/build_native.py'),
-                '--platform', 'ohos', *variant.arguments], cwd=root, env=env, check=True)
+native_arguments = ['--platform', 'ohos']
+for item in options.bundle:
+    native_arguments.extend(['--bundle', item])
+subprocess.run([sys.executable, str(root / 'scripts/build_native.py'), *native_arguments],
+               cwd=root, env=env, check=True)
 subprocess.run([flutter, 'pub', 'get'], cwd=root, env=env, check=True)
 arguments = ['--debug'] if options.debug else ['--release']
-arguments.extend(variant.flutter_arguments)
-if all_sources:
-    arguments.append('--dart-define=ZHENGUOJIAN_DISPLAY_NAME=' + display)
+arguments.extend(app.flutter_arguments)
 subprocess.run([flutter, 'build', 'hap', '--no-pub', *arguments], cwd=root, env=env, check=True)
 version = re.search(r'^version:\s*([\w.+-]+)\s*$',
                     (root / 'pubspec.yaml').read_text(encoding='utf-8'),
@@ -56,7 +52,7 @@ for source, suffix in artifacts:
     if not source.exists():
         missing.append(source.name)
         continue
-    target = output / f'{variant.slug}-{version}-ohos-arm64{suffix}.hap'
+    target = output / f'{app.slug}-{version}-ohos-arm64{suffix}.hap'
     shutil.copy2(source, target)
     print(str(target))
 if missing:

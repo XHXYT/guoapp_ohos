@@ -15,7 +15,7 @@ class DownloadConverter extends ChangeNotifier {
   DownloadConverter(this.repository, this.downloads, {MediaExecutor? executor})
     : executor = executor ?? FFmpegExecutor() {
     downloads.addListener(_sync);
-    if (Platform.isIOS || Platform.isOhos) {
+    if (Platform.isIOS || Platform.operatingSystem == 'ohos') {
       _lifecycle = AppLifecycleListener(onPause: _suspend, onResume: _resume);
     }
     _sync();
@@ -43,7 +43,7 @@ class DownloadConverter extends ChangeNotifier {
     '-i',
     work.input,
     '-map',
-    '0:v:0',
+    '0:v:0?',
     '-map',
     '0:a:0?',
     '-c',

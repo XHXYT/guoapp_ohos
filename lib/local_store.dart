@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -19,6 +20,7 @@ const _usersFile = LocalFiles.marker;
 const _settingsFile = 'settings.json';
 const _displayModes = {'auto', 'television', 'phone', 'pad', 'window'};
 const _themeModes = {'light', 'dark', 'system'};
+const coverBlurLaunchModes = {'off': '关闭', 'adult': '仅限制级', 'all': '全部'};
 const _movedFlags = {
   'followSystemColor': 'followSystemColor',
   'checkUpdates': 'checkUpdates',
@@ -36,8 +38,14 @@ const _backupFlags = {
   'deleteAfterAutoExport',
   'deleteAfterManualExport',
   'televisionKeyboard',
+  'historyTab',
+  'pureBlack',
+  'blurCoversButton',
+  'blurCoversOnLaunch',
+  'blurAllCovers',
 };
 const _blocked = '本地用户配置损坏，已锁定访问。原始记录已保留，请重新读取或从备份恢复。';
+const _unreadable = '读写本地记录时系统报错，已锁定访问，原有记录已保留。请稍后重新读取；反复出现时请查看日记里的报错内容。';
 
 String _userFile(String id, String name) => 'users/$id/$name.json';
 
@@ -75,6 +83,7 @@ class LocalStore extends ChangeNotifier {
   bool? _forceLogin;
   bool _locked = false;
   bool _disposed = false;
+  bool _erased = false;
   String? _configurationError;
   int _epoch = 0;
   int _failures = 0;
@@ -82,7 +91,18 @@ class LocalStore extends ChangeNotifier {
 
   Future<void> _initialize() async {
     try {
+      await _load();
+    } on FileSystemException catch (error) {
+      DiaryService.add('[存储] 读写本地记录失败，原有记录已保留：$error');
+      _block(_unreadable);
+    }
+  }
+
+  Future<void> _load() async {
+    try {
       if (!await files.exists()) await _migrate();
+    } on FileSystemException {
+      rethrow;
     } catch (_) {
       _block(_blocked);
       return;
@@ -98,6 +118,8 @@ class LocalStore extends ChangeNotifier {
       _forceLogin = users['forceLogin'] is bool
           ? users['forceLogin'] as bool
           : null;
+    } on FileSystemException {
+      rethrow;
     } catch (_) {
       _block(_blocked);
       return;
@@ -193,7 +215,7 @@ class LocalStore extends ChangeNotifier {
     try {
       return await files.read(name);
     } on FormatException {
-      DiaryService.add('[存储] $name 无法读取，已改名保留，按空记录继续');
+      DiaryService.add('[存储] $name 内容无法解析，已改名保留，按空记录继续');
       await files.quarantine(name).catchError((Object _) {});
       return null;
     }
@@ -279,6 +301,27 @@ class LocalStore extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
+  void sourcesChanged() => _notify();
+
+  ({Map<String, int> follows, Map<String, int> history})
+  missingSourceRecords() {
+    Map<String, int> count(Iterable<String> sources) {
+      final counts = <String, int>{};
+      for (final source in sources) {
+        if (!SourceSite.isAvailable(source)) {
+          counts[source] = (counts[source] ?? 0) + 1;
+        }
+      }
+      return counts;
+    }
+
+    if (locked) return (follows: const {}, history: const {});
+    return (
+      follows: count(_favorites.values.map((drama) => drama.source)),
+      history: count(_history.values.map((entry) => entry.drama.source)),
+    );
+  }
+
   Future<void> _write(String name, Object? value) async {
     try {
       await files.write(name, value);
@@ -300,6 +343,24 @@ class LocalStore extends ChangeNotifier {
   }
 
   bool get canDownload => !locked && (profile.admin || profile.download);
+  bool get adminProtected =>
+      _profiles.firstWhere((profile) => profile.admin).protected;
+
+  Future<void> verifyAdmin(String pin) => _queue(
+    () => _checkPin(_profiles.firstWhere((profile) => profile.admin), pin),
+  );
+
+  Future<List<String>> eraseAll(Future<List<String>> Function() wipe) async {
+    var leftover = const <String>[];
+    await _queue(() async {
+      _requireAdmin();
+      leftover = await wipe();
+      _erased = true;
+      await preferences.clear();
+    });
+    return leftover;
+  }
+
   bool allowsSource(String source) =>
       !locked &&
       SourceSite.isAvailable(source) &&
@@ -315,7 +376,7 @@ class LocalStore extends ChangeNotifier {
   bool sourceEnabled(String source) => switch (_settings['sourceSwitches']) {
     final Map switches when switches[source] is bool =>
       switches[source] as bool,
-    _ => !SourceSite.isRestricted(source),
+    _ => true,
   };
 
   Future<void> setSourceEnabled(String source, bool enabled) {
@@ -329,6 +390,14 @@ class LocalStore extends ChangeNotifier {
       final switches = {..._map(_settings['sourceSwitches']), source: enabled};
       await _saveSettings({..._settings, 'sourceSwitches': switches});
     });
+  }
+
+  List<String> _restoredModules = const [];
+
+  List<String> takeRestoredModules() {
+    final modules = _restoredModules;
+    _restoredModules = const [];
+    return modules;
   }
 
   Map<String, FollowCheck> get followChecks => Map.of(_followChecks);
@@ -402,6 +471,14 @@ class LocalStore extends ChangeNotifier {
   }
 
   bool get televisionKeyboard => _flag('televisionKeyboard', false);
+  bool get historyTab => _flag('historyTab', true);
+  bool get pureBlack => _flag('pureBlack', false);
+  bool get blurCoversButton => _flag('blurCoversButton', false);
+  String get blurCoversLaunch => switch (_settings['blurCoversLaunch']) {
+    final String mode when coverBlurLaunchModes.containsKey(mode) => mode,
+    _ => _flag('blurCoversOnLaunch', false) ? 'all' : 'off',
+  };
+  bool get blurAllCovers => _flag('blurAllCovers', true);
   bool get checkUpdates => _flag('checkUpdates', true);
   bool get autoExport => _flag('exportAfterDownload', false);
   bool get deleteAfterAutoExport => _flag('deleteAfterAutoExport', false);
@@ -542,6 +619,15 @@ class LocalStore extends ChangeNotifier {
   );
   Future<void> setTelevisionKeyboard(bool value) =>
       _setting('televisionKeyboard', value);
+  Future<void> setHistoryTab(bool value) => _setting('historyTab', value);
+  Future<void> setPureBlack(bool value) => _setting('pureBlack', value);
+  Future<void> setBlurCoversButton(bool value) =>
+      _setting('blurCoversButton', value);
+  Future<void> setBlurCoversLaunch(String value) =>
+      coverBlurLaunchModes.containsKey(value)
+      ? _setting('blurCoversLaunch', value)
+      : Future.value();
+  Future<void> setBlurAllCovers(bool value) => _setting('blurAllCovers', value);
   Future<void> setCheckUpdates(bool value) => _setting('checkUpdates', value);
   Future<void> setAutoExport(bool value) =>
       _setting('exportAfterDownload', value);
@@ -774,8 +860,8 @@ class LocalStore extends ChangeNotifier {
             notice.id,
             () => Drama(
               id: notice.id,
-              source: SourceSite.hongguo.id,
-              sourceId: notice.id.substring(SourceSite.hongguo.id.length + 1),
+              source: hongguoSourceId,
+              sourceId: notice.id.substring(hongguoSourceId.length + 1),
               title: notice.title,
             ),
           );
@@ -783,8 +869,7 @@ class LocalStore extends ChangeNotifier {
       }
       final favoriteIds = favorites.keys.toSet();
       for (final favorite in favorites.values) {
-        if (favorite.source != SourceSite.hongguo.id ||
-            states[favorite.id] == null) {
+        if (favorite.source != hongguoSourceId || states[favorite.id] == null) {
           continue;
         }
         states[favorite.id] = observeHongguoSeriesSeasons(
@@ -834,13 +919,18 @@ class LocalStore extends ChangeNotifier {
   });
 
   Future<void> switchProfile(String id, {String pin = ''}) => _queue(() async {
-    if (_configurationError != null) throw StateError('本地用户配置损坏，请先恢复');
+    if (_configurationError != null) throw StateError(_configurationError!);
     final target = _profiles.firstWhere((profile) => profile.id == id);
     await _checkPin(target, pin);
     await _saveUsers(_profiles, id, _forceLogin);
     _current = id;
     _locked = false;
-    await _loadUser();
+    try {
+      await _loadUser();
+    } on FileSystemException catch (error) {
+      DiaryService.add('[存储] 读写本地记录失败，原有记录已保留：$error');
+      _block(_unreadable);
+    }
     _epoch++;
     _notify();
   });
@@ -865,7 +955,7 @@ class LocalStore extends ChangeNotifier {
     if (cleanName.isEmpty || cleanName.length > 40) {
       throw StateError('用户名需要 1 至 40 个字符');
     }
-    if (sources.any((source) => !SourceSite.isKnown(source))) {
+    if (sources.any((source) => !validSourceId(source))) {
       throw StateError('站源无效');
     }
     if (targetId != 'default' &&
@@ -927,7 +1017,7 @@ class LocalStore extends ChangeNotifier {
     _notify();
   });
 
-  Future<String> exportBackup() async {
+  Future<String> exportBackup({Iterable<String> modules = const []}) async {
     await _writes.catchError((Object _) {});
     _requireAdmin();
     final libraries = <String, Object?>{};
@@ -959,6 +1049,10 @@ class LocalStore extends ChangeNotifier {
       'themeMode': themeMode,
       'followSystemColor': followSystemColor,
       'themeColor': themeColor.name,
+      'pureBlack': pureBlack,
+      'blurCoversButton': blurCoversButton,
+      'blurCoversLaunch': blurCoversLaunch,
+      'blurAllCovers': blurAllCovers,
       'forceLogin': forceLogin,
       'checkUpdates': checkUpdates,
       'shareUsage': shareUsage,
@@ -966,6 +1060,8 @@ class LocalStore extends ChangeNotifier {
       'deleteAfterAutoExport': deleteAfterAutoExport,
       'deleteAfterManualExport': deleteAfterManualExport,
       'televisionKeyboard': televisionKeyboard,
+      'sourceSwitches': _map(_settings['sourceSwitches']),
+      'modules': modules.where(validSourceId).toSet().toList(),
       'libraries': libraries,
     });
     if (utf8.encode(content).length > 8 * 1024 * 1024) {
@@ -994,6 +1090,10 @@ class LocalStore extends ChangeNotifier {
             ThemeColor.byName(data['themeColor']) == null) {
       throw const FormatException('备份主题色设置无效');
     }
+    if (data.containsKey('blurCoversLaunch') &&
+        !coverBlurLaunchModes.containsKey(data['blurCoversLaunch'])) {
+      throw const FormatException('备份封面模糊设置无效');
+    }
     if (data.containsKey('forceLogin') && data['forceLogin'] is! bool) {
       throw const FormatException('备份登录设置无效');
     }
@@ -1001,6 +1101,25 @@ class LocalStore extends ChangeNotifier {
       (key) => data.containsKey(key) && data[key] is! bool,
     )) {
       throw const FormatException('备份设置无效');
+    }
+    if (data['sourceSwitches'] case final Object switches) {
+      if (switches is! Map ||
+          switches.length > 100 ||
+          switches.entries.any(
+            (entry) =>
+                entry.key is! String ||
+                !validSourceId(entry.key as String) ||
+                entry.value is! bool,
+          )) {
+        throw const FormatException('备份站源设置无效');
+      }
+    }
+    if (data['modules'] case final Object modules) {
+      if (modules is! List ||
+          modules.length > 100 ||
+          modules.any((id) => id is! String || !validSourceId(id))) {
+        throw const FormatException('备份模块列表无效');
+      }
     }
     final libraries = data['libraries'] as Map;
     for (final profile in profiles) {
@@ -1061,6 +1180,12 @@ class LocalStore extends ChangeNotifier {
           'themeColor': color.name,
         for (final key in _backupFlags)
           if (data[key] case final bool value) key: value,
+        if (data['sourceSwitches'] case final Map switches)
+          'sourceSwitches': switches,
+        if (data['blurCoversLaunch'] case final String mode)
+          'blurCoversLaunch': mode
+        else if (data['blurCoversOnLaunch'] case final bool launch)
+          'blurCoversLaunch': launch ? 'all' : 'off',
       },
       _usersFile: {
         'profiles': [for (final profile in profiles) profile.toJson()],
@@ -1090,6 +1215,9 @@ class LocalStore extends ChangeNotifier {
     }
     await _removeLegacy();
     await _initialize();
+    _restoredModules = [
+      if (data['modules'] case final List modules) ...modules.cast<String>(),
+    ];
     _epoch++;
     _notify();
   }
@@ -1176,7 +1304,9 @@ class LocalStore extends ChangeNotifier {
   });
 
   Future<void> _queue(Future<void> Function() action) {
-    _writes = _writes.catchError((Object _) {}).then((_) => action());
+    _writes = _writes
+        .catchError((Object _) {})
+        .then((_) => _erased ? null : action());
     return _writes;
   }
 

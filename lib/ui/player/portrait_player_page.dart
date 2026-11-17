@@ -8,6 +8,7 @@ import 'package:media_kit/media_kit.dart';
 
 import '../../local_store.dart';
 import '../../models.dart';
+import '../../playback_preferences.dart';
 import '../../playback_session.dart';
 import '../app_scope.dart';
 import '../downloads/download_actions.dart';
@@ -21,6 +22,7 @@ import 'fade_presence.dart';
 import 'mini_player.dart';
 import 'playback_sheets.dart';
 import 'playback_handle.dart';
+import 'player_lock.dart';
 import 'player_surface.dart';
 import 'player_video.dart';
 import 'swipe_controls.dart';
@@ -35,10 +37,12 @@ class PortraitPlayerPage extends StatefulWidget {
     super.key,
     required this.store,
     required this.handle,
+    this.onFullscreen,
     this.onMiniWindow,
   });
   final LocalStore store;
   final PlaybackHandle handle;
+  final VoidCallback? onFullscreen;
   final VoidCallback? onMiniWindow;
 
   @override
@@ -55,7 +59,8 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
   bool _scrolling = false;
   bool _edgeHinted = false;
   bool _holding = false;
-  bool _overMask = false;
+  int _sheets = 0;
+  bool _lockArmed = false;
   int _heldIndex = -1;
   bool _dragging = false;
   double? _seekValue;
@@ -63,6 +68,7 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
   Timer? _seekTimer;
   Timer? _idleTimer;
   bool _idle = false;
+  bool _quietSwitch = false;
   late bool _lastPaused = _session.paused;
   late int _lastIndex = _session.index;
   bool _immersive = false;
@@ -71,6 +77,7 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
   double? _pinchFrom;
   double _pinchBase = 1;
   double _zoom = 1;
+  bool _snapping = false;
 
   PlaybackSession get _session => widget.handle.session;
 
@@ -144,17 +151,34 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
   void _wake() {
     _idleTimer?.cancel();
     _idle = false;
+    _quietSwitch = false;
     _idleTimer = Timer(const Duration(seconds: 3), () {
       if (mounted) setState(() => _idle = true);
     });
   }
 
   bool get _chromeShown =>
-      !_session.store.playbackPreferences.autoHideControls ||
-      !_idle ||
-      _dragging ||
-      _session.paused ||
-      !_session.ready;
+      !_session.locked &&
+      (!_session.store.playbackPreferences.autoHideControls ||
+          !_idle ||
+          _dragging ||
+          _session.paused ||
+          _session.error != null ||
+          _session.loading && !_quietSwitch);
+
+  void _lock() {
+    if (_holding) _pressEnd();
+    unawaited(HapticFeedback.selectionClick());
+    _session.setLocked(true);
+    _say('已锁定，点屏幕显示锁图标');
+  }
+
+  void _unlock() {
+    unawaited(HapticFeedback.selectionClick());
+    _session.setLocked(false);
+    _wake();
+    _say('已解锁');
+  }
 
   void _syncSystemBars() {
     final immersive =
@@ -184,10 +208,16 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
   }
 
   void _refresh() {
-    if (_session.paused != _lastPaused || _session.index != _lastIndex) {
+    final switched = _session.index != _lastIndex;
+    if (_session.paused != _lastPaused || switched) {
+      final quiet = switched && _idle && !_session.paused;
       _lastPaused = _session.paused;
       _lastIndex = _session.index;
-      _wake();
+      if (quiet) {
+        _quietSwitch = true;
+      } else {
+        _wake();
+      }
     }
     if (mounted) setState(() {});
   }
@@ -229,12 +259,14 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
           page >= 0 &&
           page < _session.detail.episodes.length) {
         unawaited(_session.play(page));
+        setState(_wake);
       }
     }
     return false;
   }
 
   void _wheel(PointerSignalEvent event) {
+    if (_session.locked) return;
     if (event is! PointerScrollEvent || event.scrollDelta.dy == 0) return;
     GestureBinding.instance.pointerSignalResolver.register(event, (_) {
       if (_scrolling) return;
@@ -254,12 +286,22 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
     });
   }
 
-  double get _fillZoom {
-    final size = MediaQuery.sizeOf(context);
-    if (size.isEmpty) return 1;
-    final screen = size.width / size.height;
-    final video = _session.aspectRatio;
-    return math.max(screen / video, video / screen);
+  double _fitWidth(VideoFit fit, Size video) => fit
+      .size(
+        MediaQuery.sizeOf(context),
+        video,
+        MediaQuery.devicePixelRatioOf(context),
+      )
+      .width;
+
+  (double, double) get _zoomRange {
+    final video = _session.videoSize;
+    if (video == null || MediaQuery.sizeOf(context).isEmpty) return (1, 1);
+    final width = _fitWidth(_session.videoFit, video);
+    return (
+      _fitWidth(VideoFit.auto, video) / width,
+      _fitWidth(VideoFit.crop, video) / width,
+    );
   }
 
   bool get _pinching => _pinchFrom != null;
@@ -270,6 +312,7 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
   }
 
   void _pointerDown(PointerDownEvent event) {
+    if (_session.locked) return;
     _pointers[event.pointer] = event.position;
     if (_pointers.length != 2) return;
     if (_holding) _pressEnd();
@@ -280,11 +323,13 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
   }
 
   void _pointerMove(PointerMoveEvent event) {
+    if (_session.locked) return;
     if (!_pointers.containsKey(event.pointer)) return;
     _pointers[event.pointer] = event.position;
     final from = _pinchFrom;
     if (from == null || _pointers.length != 2) return;
-    setState(() => _zoom = (_pinchBase * _span / from).clamp(1.0, _fillZoom));
+    final (low, high) = _zoomRange;
+    setState(() => _zoom = (_pinchBase * _span / from).clamp(low, high));
   }
 
   void _pointerUp(PointerEvent event) {
@@ -295,24 +340,46 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
   }
 
   void _settleZoom() {
-    final fill = _fillZoom;
-    final filled = _pinchBase > 1
-        ? _zoom > fill - (fill - 1) * .3
-        : _zoom > 1 + (fill - 1) * .3;
-    setState(() => _zoom = filled ? fill : 1);
-    if (filled == (_pinchBase > 1) || fill <= 1.01) return;
+    final fit = _session.videoFit;
+    final video = _session.videoSize;
+    final (low, high) = _zoomRange;
+    final threshold = fit == VideoFit.crop
+        ? high - (high - low) * .3
+        : low + (high - low) * .3;
+    final target =
+        video == null || high - low <= .01 || (_zoom - _pinchBase).abs() < .05
+        ? fit
+        : _zoom > threshold
+        ? VideoFit.crop
+        : VideoFit.auto;
+    if (target == fit) return setState(() => _zoom = 1);
+    setState(() {
+      _snapping = true;
+      _zoom *= _fitWidth(fit, video!) / _fitWidth(target, video);
+    });
+    unawaited(
+      _session.setVideoFit(target).catchError((Object _) => _saveFailed()),
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() {
+        _snapping = false;
+        _zoom = 1;
+      });
+    });
     unawaited(HapticFeedback.selectionClick());
-    _say(filled ? '已铺满屏幕，双指捏合恢复' : '已恢复完整画面');
+    _say(target == VideoFit.crop ? '画面比例：裁切，双指捏合恢复' : '画面比例：自动');
   }
 
   void _pressStart(LongPressStartDetails details, double width) {
-    if (details.localPosition.dx < width / 5) {
+    final x = details.localPosition.dx;
+    if (x < width / 5 || x > width * 4 / 5) {
       if (!_session.boostLocked) _session.holdBoost();
       unawaited(HapticFeedback.selectionClick());
       setState(() {
         _holding = true;
         _heldIndex = _session.index;
-        _overMask = false;
+        _lockArmed = false;
       });
     } else {
       unawaited(HapticFeedback.selectionClick());
@@ -322,30 +389,44 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
 
   void _pressMove(LongPressMoveUpdateDetails details) {
     if (!_holding) return;
-    final over =
-        details.globalPosition.dy >=
-        MediaQuery.sizeOf(context).height - _bars.bottom - _maskHeight;
-    if (over != _overMask) {
+    final height = MediaQuery.sizeOf(context).height;
+    final armed =
+        details.localOffsetFromOrigin.dy >= height / 3 ||
+        details.globalPosition.dy >= height - _bars.bottom - _maskHeight;
+    if (armed != _lockArmed) {
       unawaited(HapticFeedback.selectionClick());
-      setState(() => _overMask = over);
+      setState(() => _lockArmed = armed);
     }
   }
 
   void _pressEnd() {
     if (!_holding) return;
-    if (_overMask) {
+    if (_lockArmed) {
       _session.setBoostLocked(!_session.boostLocked);
     } else if (!_session.boostLocked) {
       _session.endBoost();
     }
     setState(() {
       _holding = false;
-      _overMask = false;
+      _lockArmed = false;
     });
   }
 
-  Future<void> _openSettings() => showPlayerSheet(
-    context,
+  Future<void> _sheet(WidgetBuilder builder, {bool fitContent = false}) async {
+    setState(() => _sheets++);
+    try {
+      await showPlayerSheet(
+        context,
+        builder,
+        fitContent: fitContent,
+        barrierColor: Colors.transparent,
+      );
+    } finally {
+      if (mounted) setState(() => _sheets--);
+    }
+  }
+
+  Future<void> _openSettings() => _sheet(
     (_) => PlaybackSettings(
       session: _session,
       onFailure: _saveFailed,
@@ -353,10 +434,10 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
     ),
   );
 
-  Future<void> _openEpisodes() => showPlayerSheet(
-    context,
+  Future<void> _openEpisodes() => _sheet(
     (_) => _EpisodeSheet(
       session: _session,
+      onSeasons: () => unawaited(_openSeasons()),
       canDownload:
           AppScope.of(context).repository.supportsDownloads &&
           widget.store.canDownload,
@@ -367,6 +448,30 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
       ),
     ),
   );
+
+  Future<void> _openSeasons() async {
+    DramaSeason? picked;
+    await _sheet(
+      fitContent: true,
+      (_) => _SeasonSheet(
+        session: _session,
+        onSeason: (season) => picked = season,
+      ),
+    );
+    if (!mounted) return;
+    if (picked case final season?) {
+      await _playSeason(season);
+    } else {
+      await _openEpisodes();
+    }
+  }
+
+  Future<void> _playSeason(DramaSeason season) async {
+    if (_session.switchingSeason) return;
+    if (!await _session.playSeason(season) && mounted) {
+      _say('${season.label}切换失败，请稍后重试');
+    }
+  }
 
   void _saveFailed() {
     if (!mounted) return;
@@ -382,31 +487,51 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
       value: AppTheme.systemBars(Brightness.dark),
       child: Theme(
         data: dark,
-        child: Scaffold(
-          backgroundColor: Colors.black,
-          body: Stack(
-            fit: StackFit.expand,
-            children: [
-              Listener(
-                onPointerDown: _pointerDown,
-                onPointerMove: _pointerMove,
-                onPointerUp: _pointerUp,
-                onPointerCancel: _pointerUp,
-                child: NotificationListener<ScrollNotification>(
-                  onNotification: _scrolled,
-                  child: PageView.builder(
-                    controller: _pages,
-                    scrollDirection: Axis.vertical,
-                    physics: _pinching
-                        ? const NeverScrollableScrollPhysics()
-                        : const _PagePhysics(),
-                    itemCount: _session.detail.episodes.length,
-                    itemBuilder: _page,
+        child: PopScope(
+          canPop: !_session.locked,
+          onPopInvokedWithResult: (didPop, _) {
+            if (!didPop) _say('已锁定，点屏幕显示锁图标');
+          },
+          child: Scaffold(
+            backgroundColor: Colors.black,
+            body: Stack(
+              fit: StackFit.expand,
+              children: [
+                Listener(
+                  onPointerDown: _pointerDown,
+                  onPointerMove: _pointerMove,
+                  onPointerUp: _pointerUp,
+                  onPointerCancel: _pointerUp,
+                  child: NotificationListener<ScrollNotification>(
+                    onNotification: _scrolled,
+                    child: PageView.builder(
+                      controller: _pages,
+                      scrollDirection: Axis.vertical,
+                      physics: _pinching || _session.locked
+                          ? const NeverScrollableScrollPhysics()
+                          : const _PagePhysics(),
+                      itemCount: _session.detail.episodes.length,
+                      itemBuilder: _page,
+                    ),
                   ),
                 ),
-              ),
-              IgnorePointer(ignoring: _scrolling, child: _controls(context)),
-            ],
+                IgnorePointer(ignoring: _scrolling, child: _controls(context)),
+                PlayerLockOverlay(
+                  locked: _session.locked,
+                  alignments: const [Alignment.topRight],
+                  padding: EdgeInsets.only(top: _bars.top + 6, right: 12),
+                  onUnlock: _unlock,
+                  onBlocked: () => _say('已锁定，点击锁图标解锁'),
+                ),
+                IgnorePointer(
+                  child: AnimatedOpacity(
+                    opacity: _sheets > 0 ? 1 : 0,
+                    duration: Motion.of(context, Motion.medium),
+                    child: const ColoredBox(color: Colors.black54),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -431,7 +556,7 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
             ClipRect(
               child: AnimatedScale(
                 scale: _zoom,
-                duration: _pinching
+                duration: _pinching || _snapping
                     ? Duration.zero
                     : Motion.of(context, Motion.medium),
                 curve: Motion.standard,
@@ -439,6 +564,7 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
                   key: ValueKey(player),
                   handle: widget.handle,
                   player: player,
+                  fit: session.videoFit,
                 ),
               ),
             ),
@@ -468,23 +594,29 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
             DanmakuOverlay(
               key: const ValueKey('danmaku'),
               controller: session.danmaku,
-              aspectRatio: session.aspectRatio,
+              video: session.videoSize,
+              fit: session.videoFit,
               style: session.danmakuStyle,
+              topLimit: (session.videoSize?.aspectRatio ?? 0) > 1
+                  ? math.max(_bars.top, MediaQuery.paddingOf(context).top) + 56
+                  : null,
             ),
             SwipeControls(
               key: const ValueKey('gestures'),
               session: session,
-              enabled: !_pinching,
+              enabled: !_pinching && !_session.locked,
               child: LayoutBuilder(
                 builder: (context, constraints) => GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  onTap: _pinching ? null : session.togglePlayback,
-                  onLongPressStart: _pinching
+                  onTap: _pinching || _session.locked
+                      ? null
+                      : session.togglePlayback,
+                  onLongPressStart: _pinching || _session.locked
                       ? null
                       : (details) => _pressStart(details, constraints.maxWidth),
-                  onLongPressMoveUpdate: _pressMove,
-                  onLongPressEnd: (_) => _pressEnd(),
-                  onLongPressCancel: _pressEnd,
+                  onLongPressMoveUpdate: _session.locked ? null : _pressMove,
+                  onLongPressEnd: _session.locked ? null : (_) => _pressEnd(),
+                  onLongPressCancel: _session.locked ? null : _pressEnd,
                 ),
               ),
             ),
@@ -565,6 +697,19 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
             null => null,
           },
         ),
+        if (bottom > 0)
+          Positioned(
+            key: const ValueKey('system-gesture-guard'),
+            left: 0,
+            right: 0,
+            bottom: 0,
+            height: bottom,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: session.locked ? null : session.togglePlayback,
+              onVerticalDragStart: session.locked ? null : (_) {},
+            ),
+          ),
         Positioned(
           key: const ValueKey('header'),
           left: 4,
@@ -597,11 +742,36 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
         Positioned(
           key: const ValueKey('episodes'),
           left: 16,
-          right: 16,
+          right: widget.onFullscreen == null ? 16 : 68,
           bottom: bottom + 16,
           height: 44,
           child: _chrome(_episodeStrip()),
         ),
+        if (widget.onFullscreen case final onFullscreen?)
+          Positioned(
+            key: const ValueKey('fullscreen'),
+            right: 16,
+            bottom: bottom + 16,
+            width: 44,
+            height: 44,
+            child: _chrome(
+              IconButton(
+                onPressed: () {
+                  setState(_wake);
+                  onFullscreen();
+                },
+                icon: const Icon(Icons.fullscreen_rounded),
+                color: Colors.white,
+                tooltip: '全屏',
+                style: IconButton.styleFrom(
+                  backgroundColor: Colors.white.withValues(alpha: .14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
+            ),
+          ),
         Positioned(
           left: 0,
           right: 0,
@@ -628,7 +798,7 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
                     spacing: 8,
                     children: [
                       Icon(
-                        !_overMask
+                        !_lockArmed
                             ? Icons.fast_forward_rounded
                             : locked
                             ? Icons.lock_open_rounded
@@ -637,7 +807,7 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
                         color: Colors.white,
                       ),
                       Text(
-                        '${_overMask ? '' : '下滑'}松手${locked ? '取消' : '锁定'} 2 倍速',
+                        '${_lockArmed ? '' : '下滑'}松手${locked ? '取消' : '锁定'} ${session.store.playbackPreferences.boostLabel}',
                         style: const TextStyle(
                           color: Colors.white,
                           fontSize: 15,
@@ -757,6 +927,7 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
           color: Colors.white,
           activeColor: Theme.of(context).colorScheme.primaryFixedDim,
         ),
+        if (!desktopPlatform) PlayerLockButton(locked: false, onPressed: _lock),
       ],
     );
   }
@@ -919,14 +1090,14 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
       color: Colors.black.withValues(alpha: .5),
       borderRadius: BorderRadius.circular(16),
     ),
-    child: const Row(
+    child: Row(
       mainAxisSize: MainAxisSize.min,
       spacing: 6,
       children: [
-        Icon(Icons.fast_forward_rounded, size: 16, color: Colors.white),
+        const Icon(Icons.fast_forward_rounded, size: 16, color: Colors.white),
         Text(
-          '2 倍速播放中',
-          style: TextStyle(
+          '${_session.store.playbackPreferences.boostLabel}播放中',
+          style: const TextStyle(
             color: Colors.white,
             fontSize: 14,
             fontWeight: FontWeight.w600,
@@ -976,10 +1147,12 @@ class _Shade extends StatelessWidget {
 class _EpisodeSheet extends StatefulWidget {
   const _EpisodeSheet({
     required this.session,
+    required this.onSeasons,
     required this.canDownload,
     required this.onDownload,
   });
   final PlaybackSession session;
+  final VoidCallback onSeasons;
   final bool canDownload;
   final ValueChanged<List<int>> onDownload;
 
@@ -1001,8 +1174,6 @@ class _EpisodeSheetState extends State<_EpisodeSheet> {
   @override
   Widget build(BuildContext context) {
     final episodes = _session.detail.episodes;
-    final drama = _session.detail.drama;
-    final colors = Theme.of(context).colorScheme;
     final all = _selected.length == episodes.length;
     return PopScope(
       canPop: !_selecting,
@@ -1047,18 +1218,7 @@ class _EpisodeSheetState extends State<_EpisodeSheet> {
                     ),
                   ]
                 : [
-                    const Text('选集', style: sheetTitle),
-                    Expanded(
-                      child: Text(
-                        '${_status(drama)}共 ${episodes.length} 集',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: colors.onSurfaceVariant,
-                        ),
-                      ),
-                    ),
+                    const Expanded(child: Text('选集', style: sheetTitle)),
                     if (widget.canDownload)
                       IconButton(
                         onPressed: () => _select(true),
@@ -1076,6 +1236,9 @@ class _EpisodeSheetState extends State<_EpisodeSheet> {
             child: ListenableBuilder(
               listenable: _session,
               builder: (context, _) => EpisodeGrid(
+                header: !_selecting && _session.detail.seasons.isNotEmpty
+                    ? _seasonBar(context)
+                    : null,
                 episodes: episodes,
                 current: _session.index,
                 selecting: _selecting,
@@ -1093,6 +1256,138 @@ class _EpisodeSheetState extends State<_EpisodeSheet> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _seasonBar(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final seasons = _session.detail.seasons;
+    final current = seasons
+        .where((season) => season.drama.id == _session.detail.drama.id)
+        .firstOrNull;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+      child: Material(
+        color: colors.surfaceContainerHighest.withValues(alpha: .55),
+        borderRadius: BorderRadius.circular(12),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: () {
+            Navigator.pop(context);
+            widget.onSeasons();
+          },
+          child: SizedBox(
+            height: 44,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 8, 0),
+              child: Row(
+                spacing: 8,
+                children: [
+                  Icon(Icons.layers_rounded, size: 18, color: colors.primary),
+                  Text(
+                    current?.label ?? '系列多季',
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  Expanded(
+                    child: Text(
+                      '共 ${seasons.length} 季',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    Icons.chevron_right_rounded,
+                    color: colors.onSurfaceVariant,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SeasonSheet extends StatelessWidget {
+  const _SeasonSheet({required this.session, required this.onSeason});
+  final PlaybackSession session;
+  final ValueChanged<DramaSeason> onSeason;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final seasons = session.detail.seasons;
+    final playing = session.detail.drama.id;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SheetHeader(
+          children: [
+            const Expanded(child: Text('选择季', style: sheetTitle)),
+            IconButton(
+              onPressed: () => Navigator.pop(context),
+              icon: const Icon(Icons.close_rounded),
+              tooltip: '关闭',
+            ),
+          ],
+        ),
+        Flexible(
+          child: SafeArea(
+            top: false,
+            child: GridView.builder(
+              shrinkWrap: true,
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+              itemCount: seasons.length,
+              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                maxCrossAxisExtent: 120,
+                mainAxisExtent: 48,
+                mainAxisSpacing: 8,
+                crossAxisSpacing: 8,
+              ),
+              itemBuilder: (context, index) {
+                final season = seasons[index];
+                final current = season.drama.id == playing;
+                return Material(
+                  color: current
+                      ? colors.primaryContainer
+                      : colors.surfaceContainerHighest.withValues(alpha: .55),
+                  borderRadius: BorderRadius.circular(14),
+                  clipBehavior: Clip.antiAlias,
+                  child: InkWell(
+                    onTap: current
+                        ? null
+                        : () {
+                            onSeason(season);
+                            Navigator.pop(context);
+                          },
+                    child: Center(
+                      child: Text(
+                        season.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          color: current
+                              ? colors.onPrimaryContainer
+                              : colors.onSurface,
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -6,15 +7,17 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 
 import '../../danmaku_controller.dart';
+import '../../danmaku_emoji.dart';
 import '../../danmaku_models.dart';
 import '../../danmaku_style.dart';
+import '../../playback_preferences.dart';
 
 const danmakuMaxRows = 64;
 
 class DanmakuFlight {
-  const DanmakuFlight(this.item, this.text, this.lane, this.width);
+  const DanmakuFlight(this.item, this.segments, this.lane, this.width);
   final DanmakuItem item;
-  final String text;
+  final List<DanmakuSegment> segments;
   final int lane;
   final double width;
 }
@@ -23,7 +26,8 @@ List<DanmakuFlight> planDanmaku(
   List<DanmakuItem> items, {
   required double width,
   required int rows,
-  required double Function(String) measure,
+  required double Function(List<DanmakuSegment> segments) measure,
+  int lifetimeMs = danmakuLifetimeMs,
 }) {
   if (!width.isFinite || width <= 0 || rows < 1) return const [];
   final lanes = List<DanmakuFlight?>.filled(
@@ -42,31 +46,31 @@ List<DanmakuFlight> planDanmaku(
     }
     if (flights.reversed
             .takeWhile(
-              (flight) => item.timeMs - flight.item.timeMs < danmakuLifetimeMs,
+              (flight) => item.timeMs - flight.item.timeMs < lifetimeMs,
             )
             .length >=
         24) {
       continue;
     }
-    final runes = item.text.runes;
-    final text =
-        String.fromCharCodes(runes.take(100)) + (runes.length > 100 ? '…' : '');
-    final size = measure(text).ceilToDouble() + 8;
+    final trimmed = truncateDanmakuSegments(
+      parseDanmakuSegments(item.text),
+      100,
+    );
+    if (trimmed.isEmpty) continue;
+    final segments = item.count > 1
+        ? [...trimmed, DanmakuSegment.text(' ×${item.count}')]
+        : trimmed;
+    final size = measure(segments).ceilToDouble() + 8;
     final lane = lanes.indexWhere((previous) {
       if (previous == null) return true;
       final gap = item.timeMs - previous.item.timeMs;
-      if (gap >= danmakuLifetimeMs) return true;
-      return (width + previous.width) * gap / danmakuLifetimeMs -
-                  previous.width >=
+      if (gap >= lifetimeMs) return true;
+      return (width + previous.width) * gap / lifetimeMs - previous.width >=
               24 &&
-          width -
-                  (width + size) *
-                      (danmakuLifetimeMs - gap) /
-                      danmakuLifetimeMs >=
-              24;
+          width - (width + size) * (lifetimeMs - gap) / lifetimeMs >= 24;
     });
     if (lane < 0) continue;
-    final flight = DanmakuFlight(item, text, lane, size);
+    final flight = DanmakuFlight(item, segments, lane, size);
     lanes[lane] = flight;
     flights.add(flight);
   }
@@ -113,12 +117,16 @@ class DanmakuOverlay extends StatelessWidget {
   const DanmakuOverlay({
     super.key,
     required this.controller,
-    required this.aspectRatio,
+    required this.video,
+    this.fit = VideoFit.auto,
     this.style = const DanmakuStyle(),
+    this.topLimit,
   });
   final DanmakuController controller;
-  final double aspectRatio;
+  final Size? video;
+  final VideoFit fit;
   final DanmakuStyle style;
+  final double? topLimit;
 
   @override
   Widget build(BuildContext context) => IgnorePointer(
@@ -131,25 +139,30 @@ class DanmakuOverlay extends StatelessWidget {
               constraints.maxHeight <= 0) {
             return const SizedBox.shrink();
           }
-          final aspect = aspectRatio.isFinite && aspectRatio > 0
-              ? aspectRatio
-              : 16 / 9;
-          final width = math.min(
-            constraints.maxWidth,
-            constraints.maxHeight * aspect,
+          final box = constraints.biggest;
+          final shown = (video == null ? VideoFit.auto : fit).size(
+            box,
+            video ?? const Size(9, 16),
+            MediaQuery.devicePixelRatioOf(context),
           );
-          final height = math.min(
-            constraints.maxHeight,
-            constraints.maxWidth / aspect,
-          );
+          final width = math.min(box.width, shown.width);
+          final videoHeight = math.min(box.height, shown.height);
+          final videoTop = (box.height - videoHeight) / 2;
+          final top = switch (topLimit) {
+            final limit? => math.min(limit, videoTop),
+            null => videoTop,
+          };
+          final height = videoTop + videoHeight - top;
           final fontSize = (width < 600 ? 16.0 : 20.0) * style.scale;
           final scaler = MediaQuery.textScalerOf(context);
           final rowHeight = scaler.scale(fontSize) * 1.5;
           final rows = ((height * style.coverage.fraction - 8) / rowHeight)
               .floor()
               .clamp(0, danmakuMaxRows);
-          return Center(
-            child: SizedBox(
+          return Align(
+            alignment: Alignment.topCenter,
+            child: Container(
+              margin: EdgeInsets.only(top: top),
               width: width,
               height: height,
               child: ClipRect(
@@ -196,6 +209,10 @@ class _DanmakuLayer extends StatefulWidget {
 class _DanmakuLayerState extends State<_DanmakuLayer>
     with SingleTickerProviderStateMixin {
   late final Ticker _ticker = createTicker(_tick);
+  final _elapsed = Stopwatch();
+  Duration _pulsePeriod = Duration.zero;
+  Timer? _pulse;
+  Timer? _nextFlight;
   final _clock = ValueNotifier<double>(0);
   final _items = <String, Widget>{};
   Object? _layout;
@@ -207,11 +224,27 @@ class _DanmakuLayerState extends State<_DanmakuLayer>
   int _dataRevision = -1;
   (int, int) _window = (0, 0);
 
+  int get _lifetimeMs => (danmakuLifetimeMs / widget.style.speed).round();
+
   @override
   void initState() {
     super.initState();
     widget.controller.addListener(_changed);
     _sync();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final refreshRate = View.of(context).display.refreshRate;
+    final skip = (refreshRate / 60).floor();
+    final period = skip < 2
+        ? Duration.zero
+        : Duration(microseconds: (1e6 * skip / refreshRate).round());
+    if (period == _pulsePeriod) return;
+    _pulsePeriod = period;
+    _halt();
+    _drive();
   }
 
   @override
@@ -228,6 +261,7 @@ class _DanmakuLayerState extends State<_DanmakuLayer>
   @override
   void dispose() {
     widget.controller.removeListener(_changed);
+    _halt();
     _ticker.dispose();
     _clock.dispose();
     super.dispose();
@@ -244,13 +278,13 @@ class _DanmakuLayerState extends State<_DanmakuLayer>
       _revision = controller.motionRevision;
       _anchorMs = controller.positionMs;
       _rate = controller.rate;
-      _ticker.stop();
+      _elapsed
+        ..reset()
+        ..start();
       _clock.value = _anchorMs.toDouble();
       changed = _moveWindow();
     }
-    final run = controller.moving && widget.rows > 0;
-    if (run && !_ticker.isActive) _ticker.start();
-    if (!run && _ticker.isActive) _ticker.stop();
+    _drive();
     if (_visible != controller.visible ||
         _dataRevision != controller.dataRevision) {
       _visible = controller.visible;
@@ -260,15 +294,49 @@ class _DanmakuLayerState extends State<_DanmakuLayer>
     return changed;
   }
 
-  void _tick(Duration elapsed) {
-    _clock.value = _anchorMs + elapsed.inMicroseconds / 1000 * _rate;
+  double get _nowMs => _anchorMs + _elapsed.elapsedMicroseconds / 1000 * _rate;
+
+  void _tick([Object? _]) {
+    _clock.value = _nowMs;
     if (_moveWindow()) setState(() {});
+    _drive();
+  }
+
+  void _halt() {
+    _ticker.stop();
+    _pulse?.cancel();
+    _pulse = null;
+    _nextFlight?.cancel();
+    _nextFlight = null;
+  }
+
+  void _drive() {
+    final (first, last) = _window;
+    final moving = widget.controller.moving && widget.rows > 0;
+    if (moving && first < last) {
+      _nextFlight?.cancel();
+      _nextFlight = null;
+      if (_ticker.isActive || _pulse != null) return;
+      if (_pulsePeriod == Duration.zero) {
+        _ticker.start();
+      } else {
+        _pulse = Timer.periodic(_pulsePeriod, _tick);
+      }
+      return;
+    }
+    _halt();
+    if (!moving || last >= _schedule.length) return;
+    final wait = (_schedule[last].item.timeMs - _nowMs) / _rate;
+    _nextFlight = Timer(
+      Duration(milliseconds: math.max(0, wait.ceil())),
+      _tick,
+    );
   }
 
   (int, int) _windowAt(double now) {
     var first = 0;
     while (first < _schedule.length &&
-        now >= _schedule[first].item.timeMs + danmakuLifetimeMs) {
+        now >= _schedule[first].item.timeMs + _lifetimeMs) {
       first++;
     }
     var last = first;
@@ -310,19 +378,16 @@ class _DanmakuLayerState extends State<_DanmakuLayer>
         controller.items,
         width: widget.width,
         rows: widget.rows,
-        measure: (text) {
-          final painter = TextPainter(
-            text: TextSpan(text: text, style: fill),
-            textDirection: TextDirection.ltr,
-            textScaler: widget.scaler,
-            maxLines: 1,
-          )..layout();
-          final measured = painter.width;
-          painter.dispose();
-          return measured;
-        },
+        lifetimeMs: _lifetimeMs,
+        measure: (segments) => measureDanmakuSegments(
+          segments,
+          fill,
+          textScaler: widget.scaler,
+          fontSize: widget.fontSize,
+        ),
       );
       _window = _windowAt(_clock.value);
+      _drive();
     }
     final outline = style.hasStroke
         ? danmakuTextStyle(
@@ -348,14 +413,16 @@ class _DanmakuLayerState extends State<_DanmakuLayer>
               child: _DanmakuSlide(
                 clock: _clock,
                 startMs: flight.item.timeMs,
+                lifetimeMs: _lifetimeMs,
                 travel: widget.width + flight.width,
                 origin: widget.width,
                 child: RepaintBoundary(
                   child: _DanmakuText(
-                    text: flight.text,
+                    segments: flight.segments,
                     style: fill,
                     outline: outline,
                     scaler: widget.scaler,
+                    fontSize: widget.fontSize,
                   ),
                 ),
               ),
@@ -370,18 +437,20 @@ class _DanmakuSlide extends SingleChildRenderObjectWidget {
   const _DanmakuSlide({
     required this.clock,
     required this.startMs,
+    required this.lifetimeMs,
     required this.travel,
     required this.origin,
     required super.child,
   });
   final ValueListenable<double> clock;
   final int startMs;
+  final int lifetimeMs;
   final double travel;
   final double origin;
 
   @override
   _RenderDanmakuSlide createRenderObject(BuildContext context) =>
-      _RenderDanmakuSlide(clock, startMs, travel, origin);
+      _RenderDanmakuSlide(clock, startMs, lifetimeMs, travel, origin);
 
   @override
   void updateRenderObject(
@@ -391,13 +460,20 @@ class _DanmakuSlide extends SingleChildRenderObjectWidget {
     renderObject
       ..clock = clock
       ..startMs = startMs
+      ..lifetimeMs = lifetimeMs
       ..travel = travel
       ..origin = origin;
   }
 }
 
 class _RenderDanmakuSlide extends RenderProxyBox {
-  _RenderDanmakuSlide(this._clock, this._startMs, this._travel, this._origin);
+  _RenderDanmakuSlide(
+    this._clock,
+    this._startMs,
+    this._lifetimeMs,
+    this._travel,
+    this._origin,
+  );
 
   ValueListenable<double> _clock;
   set clock(ValueListenable<double> value) {
@@ -412,6 +488,13 @@ class _RenderDanmakuSlide extends RenderProxyBox {
   set startMs(int value) {
     if (value == _startMs) return;
     _startMs = value;
+    markNeedsPaint();
+  }
+
+  int _lifetimeMs;
+  set lifetimeMs(int value) {
+    if (value == _lifetimeMs) return;
+    _lifetimeMs = value;
     markNeedsPaint();
   }
 
@@ -445,51 +528,84 @@ class _RenderDanmakuSlide extends RenderProxyBox {
   void paint(PaintingContext context, Offset offset) {
     final child = this.child;
     if (child == null) return;
-    final progress = ((_clock.value - _startMs) / danmakuLifetimeMs).clamp(
-      0.0,
-      1.0,
-    );
+    final progress = ((_clock.value - _startMs) / _lifetimeMs).clamp(0.0, 1.0);
     context.paintChild(child, offset + Offset(_origin - _travel * progress, 0));
   }
 }
 
 class _DanmakuText extends StatelessWidget {
   const _DanmakuText({
-    required this.text,
+    required this.segments,
     required this.style,
     required this.outline,
     required this.scaler,
+    required this.fontSize,
   });
-  final String text;
+  final List<DanmakuSegment> segments;
   final TextStyle style;
   final TextStyle? outline;
   final TextScaler scaler;
+  final double fontSize;
 
-  @override
-  Widget build(BuildContext context) {
-    final label = Text(
-      text,
-      style: style,
+  InlineSpan? _span(
+    DanmakuSegment segment,
+    TextStyle textStyle, {
+    required bool withEmoji,
+  }) {
+    final text = segment.text;
+    if (text != null) {
+      if (text.isEmpty) return null;
+      return TextSpan(text: text, style: textStyle);
+    }
+    final extent = danmakuEmojiExtent(fontSize: fontSize, textScaler: scaler);
+    if (!withEmoji) {
+      return WidgetSpan(
+        alignment: PlaceholderAlignment.middle,
+        child: SizedBox(width: extent, height: extent),
+      );
+    }
+    return WidgetSpan(
+      alignment: PlaceholderAlignment.middle,
+      child: Image.asset(
+        segment.asset!,
+        width: extent,
+        height: extent,
+        filterQuality: FilterQuality.medium,
+        errorBuilder: (context, error, stackTrace) => SizedBox(
+          width: extent,
+          height: extent,
+          child: Center(
+            child: Text('🙂', style: textStyle, textScaler: scaler),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _rich(TextStyle textStyle, {required bool withEmoji}) {
+    final spans = <InlineSpan>[];
+    for (final segment in segments) {
+      final span = _span(segment, textStyle, withEmoji: withEmoji);
+      if (span != null) spans.add(span);
+    }
+    if (spans.isEmpty) return const SizedBox.shrink();
+    return Text.rich(
+      TextSpan(style: textStyle, children: spans),
       textScaler: scaler,
       textDirection: TextDirection.ltr,
       maxLines: 1,
       softWrap: false,
     );
-    final outline = this.outline;
-    if (outline == null) return label;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final label = _rich(style, withEmoji: true);
+    final stroke = outline;
+    if (stroke == null) return label;
     return Stack(
       clipBehavior: Clip.none,
-      children: [
-        Text(
-          text,
-          style: outline,
-          textScaler: scaler,
-          textDirection: TextDirection.ltr,
-          maxLines: 1,
-          softWrap: false,
-        ),
-        label,
-      ],
+      children: [_rich(stroke, withEmoji: false), label],
     );
   }
 }

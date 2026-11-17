@@ -32,6 +32,10 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Dirs]
 Name: "{app}"; Flags: uninsalwaysuninstall
 
+[InstallDelete]
+Type: files; Name: "{app}\hongguojian.exe"
+Type: files; Name: "{app}\zhenguojian.exe"
+
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "\{#BundleExecutable}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceDir}\{#BundleExecutable}"; DestDir: "{app}"; DestName: "{#ExecutableName}"; Flags: ignoreversion
@@ -124,6 +128,9 @@ end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
-  if (CurUninstallStep = usPostUninstall) and DeleteLocalData then
+  if CurUninstallStep <> usPostUninstall then
+    Exit;
+  DelTree(ExpandConstant('{localappdata}\{#AppId}'), True, True, True);
+  if DeleteLocalData then
     DelTree(ExpandConstant('{userappdata}\{#AppId}'), True, True, True);
 end;

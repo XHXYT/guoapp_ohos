@@ -5,15 +5,15 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from app_build import BuildVariant, add_variant_argument
+from app_build import app, prepare_bundled_modules
 
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
 parser.add_argument('--platform', choices=['android', 'windows', 'darwin', 'ohos'], required=True)
 parser.add_argument('--abi', action='append', choices=['arm64-v8a', 'armeabi-v7a', 'x86_64'])
-add_variant_argument(parser)
+parser.add_argument('--bundle', action='append', default=[], help='内置模块目录，可多次指定；也可用逗号分隔写在环境变量 BUNDLED_MODULES 里')
 options = parser.parse_args()
-variant = BuildVariant(options.all_sources)
+prepare_bundled_modules(options.bundle)
 
 environment = os.environ.copy()
 environment.setdefault('GOPROXY', 'https://goproxy.cn,direct')
@@ -37,10 +37,10 @@ def build(goos, architecture, compiler, output, extra=None, build_args=None):
     if extra:
         build_env.update(extra)
     print('Building ' + str(output.relative_to(root)), flush=True)
-    command = [go, 'build', '-trimpath', '-buildmode=c-shared']
+    command = [go, 'build', '-trimpath', '-buildmode=c-shared', *app.go_arguments]
     if build_args:
         command.extend(build_args)
-    command.extend(['-ldflags=' + variant.linker_flags, '-o', str(output), './bridge'])
+    command.extend(['-o', str(output), './bridge'])
     subprocess.run(command, cwd=root / 'native', env=build_env, check=True)
 
 if options.platform == 'android':
@@ -185,7 +185,7 @@ else:
         build_env = environment | {'GOOS': 'darwin', 'GOARCH': architecture, 'CC': str(compiler),
                                    'CGO_CFLAGS': '-target ' + triple, 'CGO_LDFLAGS': '-target ' + triple}
         subprocess.run([go, 'build', '-trimpath', '-buildmode=c-archive',
-                        '-ldflags=' + variant.linker_flags, '-o', str(library), './bridge'],
+                        *app.go_arguments, '-o', str(library), './bridge'],
                        cwd=root / 'native', env=build_env, check=True)
         slices.append(str(library))
     subprocess.run(['lipo', '-create', *slices, '-output', str(output)], check=True)
