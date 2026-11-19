@@ -47,3 +47,6 @@ desktop.ini
 /native/core/bundled/*
 !/native/core/bundled/.gitkeep
 /bundled-modules/
+
+# FVM Version Cache
+.fvm/
