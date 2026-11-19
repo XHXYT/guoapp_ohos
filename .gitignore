@@ -35,6 +35,8 @@ venv/
 .pytest_cache/
 
 .idea/
+.vscode/
+packages/*/pubspec.lock
 *.iml
 *.log
 .DS_Store
@@ -50,3 +52,6 @@ desktop.ini
 
 # FVM Version Cache
 .fvm/
+
+# Widget Preview related
+.widget_preview/

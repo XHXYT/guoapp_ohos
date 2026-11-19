@@ -18,6 +18,7 @@ import '../widgets/drama_grid.dart';
 import '../widgets/follow_button.dart';
 import '../widgets/motion/motion_widgets.dart';
 import '../widgets/page_header.dart';
+import '../widgets/pull_refresh.dart';
 import '../widgets/source_bar.dart';
 import '../widgets/status_view.dart';
 import '../widgets/swipe_switch.dart';
@@ -37,7 +38,7 @@ class ExplorePageState extends State<ExplorePage> {
   final _scroll = ScrollController();
   final _search = TextEditingController();
   final _tabsKey = GlobalKey();
-  final _refreshKey = GlobalKey<RefreshIndicatorState>();
+  final _refreshKey = GlobalKey<PullRefreshState>();
   String _shown = '';
 
   @override
@@ -184,31 +185,43 @@ class ExplorePageState extends State<ExplorePage> {
           child: Column(
             children: [
               if (!television)
-                SourceBar(
-                  source: source.name,
-                  searchController: _search,
-                  onSwitchSource: (anchor) => pickSource(anchor, widget.store),
-                  onOpenSearch: () => openSearch(context, widget.store, source),
-                  onSearchSubmitted: (query) => _searchSubmitted(source, query),
-                  leading: [
-                    if (widget.store.blurCoversButton)
-                      if (CoverBlurScope.of(context) case final blur?)
+                HideOnScroll(
+                  alignment: Alignment.bottomCenter,
+                  child: SourceBar(
+                    source: source.name,
+                    searchController: _search,
+                    recentSearches: widget.store.recentSearches,
+                    onForgetSearch: (query) => widget.store
+                        .forgetSearch(query)
+                        .catchError((Object _) {}),
+                    onSwitchSource: (anchor) =>
+                        pickSource(anchor, widget.store),
+                    onOpenSearch: () =>
+                        openSearch(context, widget.store, source),
+                    onSearchSubmitted: (query) =>
+                        _searchSubmitted(source, query),
+                    leading: [
+                      if (widget.store.blurCoversButton)
+                        if (CoverBlurScope.of(context) case final blur?)
+                          BarButton(
+                            icon: blur.mode != CoverBlur.off
+                                ? Icons.visibility_off_rounded
+                                : Icons.visibility_rounded,
+                            tooltip: blur.mode != CoverBlur.off
+                                ? '显示封面'
+                                : '模糊封面',
+                            onPressed: blur.onToggle,
+                          ),
+                    ],
+                    actions: [
+                      if (desktop)
                         BarButton(
-                          icon: blur.mode != CoverBlur.off
-                              ? Icons.visibility_off_rounded
-                              : Icons.visibility_rounded,
-                          tooltip: blur.mode != CoverBlur.off ? '显示封面' : '模糊封面',
-                          onPressed: blur.onToggle,
+                          icon: Icons.refresh_rounded,
+                          tooltip: '刷新',
+                          onPressed: explore.refresh,
                         ),
-                  ],
-                  actions: [
-                    if (desktop)
-                      BarButton(
-                        icon: Icons.refresh_rounded,
-                        tooltip: '刷新',
-                        onPressed: explore.refresh,
-                      ),
-                  ],
+                    ],
+                  ),
                 ),
               if (!television || explore.feed!.items.isEmpty) tabs,
               Expanded(
@@ -373,7 +386,7 @@ class ExplorePageState extends State<ExplorePage> {
               feed: feed,
               child: television
                   ? scroll
-                  : RefreshIndicator(
+                  : PullRefresh(
                       key: _refreshKey,
                       onRefresh: explore.refresh,
                       child: scroll,

@@ -9,6 +9,7 @@ import '../../app_device.dart';
 import '../../core_bridge.dart';
 import '../../download_preferences.dart';
 import '../../local_store.dart';
+import '../../media_controls.dart';
 import '../../playback_preferences.dart';
 import '../../resource_settings.dart';
 import '../../resource_settings_editor.dart';
@@ -22,6 +23,7 @@ import '../widgets/form_text_field.dart';
 import '../widgets/group_card.dart';
 import 'appearance_settings.dart';
 import 'backup_actions.dart';
+import 'boss_key_tile.dart';
 import 'diary_view.dart';
 import 'settings_rows.dart';
 import 'storage_view.dart';
@@ -216,6 +218,14 @@ class SettingsSection extends StatelessWidget {
                 preferences.copyWith(portraitStyleForWide: value),
               ),
             ),
+          if (!television)
+            SwitchTile(
+              title: '点开剧集直接播放',
+              subtitle: '跳过详情页直接进入播放，返回时回到列表',
+              value: preferences.directPlay,
+              onChanged: (value) =>
+                  savePreferences(preferences.copyWith(directPlay: value)),
+            ),
         ],
       ),
       if ((Platform.isAndroid || Platform.isIOS) && !television)
@@ -294,6 +304,21 @@ class SettingsSection extends StatelessWidget {
           ),
         ],
       ),
+      if (MediaControls.supported)
+        SettingsCard(
+          children: [
+            SwitchTile(
+              title: '后台播放',
+              subtitle: Platform.isAndroid || Platform.isIOS
+                  ? '离开应用或锁屏后继续播放，可在通知栏、锁屏和耳机上控制'
+                  : '最小化后继续播放，可用键盘媒体键和系统媒体控件控制',
+              value: preferences.backgroundPlayback,
+              onChanged: (value) => savePreferences(
+                preferences.copyWith(backgroundPlayback: value),
+              ),
+            ),
+          ],
+        ),
       if (Platform.isAndroid && !television)
         SettingsCard(
           children: [
@@ -320,6 +345,7 @@ class SettingsSection extends StatelessWidget {
                     saveSetting(context, () => setWindowOnTop(value)),
               ),
             ),
+            const BossKeyTile(),
           ],
         ),
     ];
