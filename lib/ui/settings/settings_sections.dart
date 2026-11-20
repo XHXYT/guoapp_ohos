@@ -307,16 +307,42 @@ class SettingsSection extends StatelessWidget {
       if (MediaControls.supported)
         SettingsCard(
           children: [
-            SwitchTile(
-              title: '后台播放',
-              subtitle: Platform.isAndroid || Platform.isIOS
-                  ? '离开应用或锁屏后继续播放，可在通知栏、锁屏和耳机上控制'
-                  : '最小化后继续播放，可用键盘媒体键和系统媒体控件控制',
-              value: preferences.backgroundPlayback,
-              onChanged: (value) => savePreferences(
-                preferences.copyWith(backgroundPlayback: value),
+            if (Platform.isOhos) ...[
+              SwitchTile(
+                title: '播控中心',
+                subtitle: '播放时在播控中心、锁屏和耳机上显示媒体卡片，可控制播放',
+                value: preferences.mediaControls,
+                onChanged: (value) => savePreferences(
+                  preferences.copyWith(
+                    mediaControls: value,
+                    backgroundPlayback: value
+                        ? preferences.backgroundPlayback
+                        : false,
+                  ),
+                ),
               ),
-            ),
+              SwitchTile(
+                title: '后台播放',
+                subtitle: '需要开启播控中心。离开应用或锁屏后继续播放',
+                value: preferences.backgroundPlayback,
+                onChanged: preferences.mediaControls
+                    ? (value) => savePreferences(
+                        preferences.copyWith(backgroundPlayback: value),
+                      )
+                    : null,
+              ),
+            ] else ...[
+              SwitchTile(
+                title: '后台播放',
+                subtitle: Platform.isAndroid || Platform.isIOS
+                    ? '离开应用或锁屏后继续播放，可在通知栏、锁屏和耳机上控制'
+                    : '最小化后继续播放，可用键盘媒体键和系统媒体控件控制',
+                value: preferences.backgroundPlayback,
+                onChanged: (value) => savePreferences(
+                  preferences.copyWith(backgroundPlayback: value),
+                ),
+              ),
+            ],
           ],
         ),
       if (Platform.isAndroid && !television)

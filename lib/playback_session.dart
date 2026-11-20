@@ -367,7 +367,13 @@ class PlaybackSession extends ChangeNotifier {
   void _syncMedia() {
     if (_closed) return;
     final controls = MediaControls.instance;
-    if (!_backgroundPlayback || !_engaged || !_usable || store.locked) {
+    final showControls = defaultTargetPlatform == TargetPlatform.ohos
+        ? store.playbackPreferences.mediaControls
+        : _backgroundPlayback;
+    if (!((showControls || _backgroundPlayback) &&
+        _engaged &&
+        _usable &&
+        !store.locked)) {
       controls.release(this);
       return;
     }
@@ -387,6 +393,8 @@ class PlaybackSession extends ChangeNotifier {
         rate: state.rate,
         hasPrevious: hasPrevious,
         hasNext: hasNext,
+        controls: showControls,
+        background: _backgroundPlayback,
       ),
       _mediaCommand,
     );

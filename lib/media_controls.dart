@@ -22,6 +22,8 @@ class MediaState {
     required this.hasPrevious,
     required this.hasNext,
     this.remote = false,
+    this.controls = true,
+    this.background = true,
   });
 
   final String title;
@@ -35,6 +37,8 @@ class MediaState {
   final bool hasPrevious;
   final bool hasNext;
   final bool remote;
+  final bool controls;
+  final bool background;
 
   Map<String, Object> get _identity => {
     'title': title,
@@ -47,6 +51,8 @@ class MediaState {
     'hasPrevious': hasPrevious,
     'hasNext': hasNext,
     'remote': remote,
+    'controls': controls,
+    'background': background,
   };
 }
 
@@ -61,7 +67,8 @@ class MediaControls {
     TargetPlatform.android ||
     TargetPlatform.iOS ||
     TargetPlatform.macOS ||
-    TargetPlatform.windows => true,
+    TargetPlatform.windows ||
+    TargetPlatform.ohos => true,
     _ => false,
   };
 

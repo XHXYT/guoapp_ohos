@@ -120,6 +120,7 @@ class PlaybackPreferences {
     this.directPlay = false,
     this.autoPictureInPicture = false,
     this.backgroundPlayback = false,
+    this.mediaControls = true,
     this.videoFit = VideoFit.auto,
   });
 
@@ -156,6 +157,7 @@ class PlaybackPreferences {
   final bool directPlay;
   final bool autoPictureInPicture;
   final bool backgroundPlayback;
+  final bool mediaControls;
   final VideoFit videoFit;
 
   bool preopens({required bool television}) => preopen ?? !television;
@@ -191,6 +193,7 @@ class PlaybackPreferences {
     bool? directPlay,
     bool? autoPictureInPicture,
     bool? backgroundPlayback,
+    bool? mediaControls,
     VideoFit? videoFit,
   }) => PlaybackPreferences(
     speed: speed ?? this.speed,
@@ -223,6 +226,7 @@ class PlaybackPreferences {
     directPlay: directPlay ?? this.directPlay,
     autoPictureInPicture: autoPictureInPicture ?? this.autoPictureInPicture,
     backgroundPlayback: backgroundPlayback ?? this.backgroundPlayback,
+    mediaControls: mediaControls ?? this.mediaControls,
     videoFit: videoFit ?? this.videoFit,
   );
 
@@ -257,6 +261,7 @@ class PlaybackPreferences {
     'directPlay': directPlay,
     'autoPictureInPicture': autoPictureInPicture,
     'backgroundPlayback': backgroundPlayback,
+    'mediaControls': mediaControls,
     'videoFit': videoFit.name,
   };
 
@@ -323,6 +328,7 @@ class PlaybackPreferences {
       directPlay: value['directPlay'] as bool? ?? false,
       autoPictureInPicture: value['autoPictureInPicture'] as bool? ?? false,
       backgroundPlayback: value['backgroundPlayback'] as bool? ?? false,
+      mediaControls: value['mediaControls'] as bool? ?? true,
       videoFit: VideoFit.values.asNameMap()[value['videoFit']] ?? VideoFit.auto,
     );
   }
