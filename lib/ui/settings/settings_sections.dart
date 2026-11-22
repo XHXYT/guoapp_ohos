@@ -10,6 +10,7 @@ import '../../core_bridge.dart';
 import '../../download_preferences.dart';
 import '../../local_store.dart';
 import '../../media_controls.dart';
+import '../../mini_edge_snap.dart';
 import '../../models.dart';
 import '../../playback_preferences.dart';
 import '../../resource_settings.dart';
@@ -33,6 +34,7 @@ enum SettingsGroup {
   appearance('外观', Icons.palette_outlined),
   playback('播放', Icons.play_arrow_rounded),
   danmaku('弹幕', Icons.subtitles_outlined),
+  slacking('摸鱼', Icons.set_meal_outlined),
   download('下载', Icons.download_rounded),
   storage('存储', Icons.folder_outlined),
   proxy('代理', Icons.language_rounded),
@@ -43,6 +45,9 @@ enum SettingsGroup {
   const SettingsGroup(this.label, this.icon);
   final String label;
   final IconData icon;
+
+  bool get visible =>
+      this != slacking || Platform.isWindows || Platform.isMacOS;
 }
 
 typedef OpenSubpage = void Function(String title, WidgetBuilder body);
@@ -60,6 +65,7 @@ const _decoders = {
 const _androidDecoders = {
   ..._decoders,
   TelevisionDecoder.hardwareSwapUv: '硬解（修正偏蓝）',
+  TelevisionDecoder.hardwareDirect: '硬解（直通）',
 };
 const _links = [
   [
@@ -70,6 +76,7 @@ const _links = [
     ('Telegram · 交流群组', String.fromEnvironment('TELEGRAM_GROUP_URL')),
     ('Telegram · 更新频道', String.fromEnvironment('TELEGRAM_CHANNEL_URL')),
   ],
+  [('感谢赞助 · mnyyds', 'https://github.com/mnyyds')],
 ];
 
 class SettingsSection extends StatelessWidget {
@@ -99,6 +106,7 @@ class SettingsSection extends StatelessWidget {
             children: switch (group) {
               SettingsGroup.playback => _playback(context),
               SettingsGroup.danmaku => _danmaku(context),
+              SettingsGroup.slacking => _slacking(context),
               SettingsGroup.download => _download(context),
               SettingsGroup.storage => _storage(),
               SettingsGroup.proxy => _proxy(context),
@@ -347,7 +355,7 @@ class SettingsSection extends StatelessWidget {
             ],
           ],
         ),
-      if (Platform.isAndroid && !television)
+      if ((Platform.isAndroid || Platform.isIOS) && !television)
         SettingsCard(
           children: [
             SwitchTile(
@@ -373,11 +381,42 @@ class SettingsSection extends StatelessWidget {
                     saveSetting(context, () => setWindowOnTop(value)),
               ),
             ),
-            const BossKeyTile(),
           ],
         ),
     ];
   }
+
+  List<Widget> _slacking(BuildContext context) => [
+    SettingsCard(
+      children: [
+        const BossKeyTile(),
+        if (Platform.isWindows)
+          ValueListenableBuilder(
+            valueListenable: miniEdgeSnap,
+            builder: (context, enabled, _) => SwitchTile(
+              title: '小窗贴边隐藏',
+              subtitle: '小窗拖到屏幕边缘时自动收起，鼠标移到边缘展开',
+              value: enabled,
+              onChanged: (value) =>
+                  saveSetting(context, () => setMiniEdgeSnap(value)),
+            ),
+          ),
+        if (Platform.isWindows)
+          ListenableBuilder(
+            listenable: Listenable.merge([miniEdgeSnap, miniEdgePause]),
+            builder: (context, _) => SwitchTile(
+              title: '贴边自动暂停',
+              subtitle: '小窗贴边收起时暂停播放，展开后继续',
+              value: miniEdgePause.value,
+              onChanged: miniEdgeSnap.value
+                  ? (value) =>
+                        saveSetting(context, () => setMiniEdgePause(value))
+                  : null,
+            ),
+          ),
+      ],
+    ),
+  ];
 
   List<Widget> _download(BuildContext context) {
     final canDownload = store.canDownload;

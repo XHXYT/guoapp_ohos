@@ -4,6 +4,7 @@ import 'dart:ui' show Size;
 
 import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'core_bridge.dart';
 import 'danmaku_controller.dart';
@@ -18,6 +19,22 @@ import 'playback_preferences.dart';
 import 'playback_preloader.dart';
 import 'playback_recovery.dart';
 
+const _swapChromaSource = '''
+//!HOOK NATIVE
+//!BIND HOOKED
+//!DESC swap chroma
+vec4 hook() {
+    return HOOKED_tex(HOOKED_pos).xzyw;
+}
+''';
+
+Future<String> _swapChromaShader() async {
+  final directory = await getApplicationSupportDirectory();
+  final file = File('${directory.path}/swap_chroma.glsl');
+  await file.writeAsString(_swapChromaSource);
+  return file.path;
+}
+
 Size? videoDisplaySize(VideoParams parameters) {
   final width = (parameters.dw ?? 0) > 0 ? parameters.dw! : parameters.w ?? 0;
   final height = (parameters.dh ?? 0) > 0 ? parameters.dh! : parameters.h ?? 0;
@@ -28,12 +45,37 @@ Size? videoDisplaySize(VideoParams parameters) {
       : Size(width.toDouble(), height.toDouble());
 }
 
+bool audioOnly(Tracks tracks) {
+  bool real(String id) => id != 'auto' && id != 'no';
+  return tracks.audio.any((track) => real(track.id)) &&
+      !tracks.video.any(
+        (track) =>
+            real(track.id) && track.albumart != true && track.image != true,
+      );
+}
+
+final _diagnosticAddress = RegExp(r'[a-z]+://\S+', caseSensitive: false);
+
 String _diagnostic(Object error) {
-  final text = error.toString().replaceAll(
-    RegExp(r'[a-z]+://\S+', caseSensitive: false),
-    '[地址]',
-  );
+  final text = error.toString().replaceAll(_diagnosticAddress, '[地址]');
   return text.length > 300 ? text.substring(0, 300) : text;
+}
+
+String _diagnosticPlaybackTarget(String? address) {
+  if (address == null || address.isEmpty) return 'unknown';
+  final uri = Uri.tryParse(address);
+  if (uri == null) return 'unknown';
+  if (uri.scheme == 'file') return 'local_file';
+  if (!const {'http', 'https', 'tcp', 'tls'}.contains(uri.scheme)) {
+    return 'unknown';
+  }
+  final host = uri.host;
+  if (host.isEmpty) return 'unknown';
+  if (host.toLowerCase() == 'localhost' ||
+      InternetAddress.tryParse(host)?.isLoopback == true) {
+    return 'loopback port=${uri.port}';
+  }
+  return 'remote';
 }
 
 class PlaybackSession extends ChangeNotifier {
@@ -95,6 +137,7 @@ class PlaybackSession extends ChangeNotifier {
     _subscriptions.clear();
     final size = videoDisplaySize(player.state.videoParams);
     if (size != null) _videoSize = size;
+    if (audioOnly(player.state.tracks)) _audioDetected = true;
     _buffering(player.state.buffering);
     final stream = player.stream;
     _subscriptions.addAll([
@@ -122,6 +165,11 @@ class PlaybackSession extends ChangeNotifier {
       }),
       for (final changes in [stream.duration, stream.buffer, stream.rate])
         changes.listen((_) => _sync()),
+      stream.tracks.listen((tracks) {
+        if (_audioDetected || !audioOnly(tracks)) return;
+        _audioDetected = true;
+        _notify();
+      }),
       stream.videoParams.listen((parameters) {
         final size = videoDisplaySize(parameters);
         if (size == null || _closed) return;
@@ -223,6 +271,7 @@ class PlaybackSession extends ChangeNotifier {
   bool _locked = false;
   bool _engaged;
   bool _staleAudio = false;
+  bool _audioDetected = false;
   bool _stalled = false;
   String _loadingMessage = '正在准备播放';
   String? _error;
@@ -269,6 +318,7 @@ class PlaybackSession extends ChangeNotifier {
     null => 9 / 16,
   };
   bool get aspectKnown => _videoSize != null;
+  bool get audio => episode.audio || _audioDetected;
   VideoFit get videoFit => _videoFit;
   double get speed => _speed;
   DateTime? get sleepAt => _sleepAt;
@@ -506,7 +556,15 @@ class PlaybackSession extends ChangeNotifier {
 
   void _playerError(String error) {
     if (_closed || !_acceptErrors || error.trim().isEmpty) return;
-    DiaryService.add('[Play] 播放器报错：${_diagnostic(error)}');
+    final target = _diagnosticAddress.firstMatch(error)?.group(0);
+    final plan = _plan;
+    final planned = plan?.local == true
+        ? 'local_file'
+        : _diagnosticPlaybackTarget(plan?.url);
+    DiaryService.add(
+      '[Play] 播放器报错：${_diagnostic(error)} '
+      'error_target=${_diagnosticPlaybackTarget(target)} plan_target=$planned',
+    );
     _queueRecovery('player_error');
   }
 
@@ -730,6 +788,7 @@ class PlaybackSession extends ChangeNotifier {
     final decoder = store.playbackPreferences.televisionDecoder;
     final hwdec = switch (decoder) {
       TelevisionDecoder.software => 'no',
+      TelevisionDecoder.hardwareDirect when Platform.isAndroid => 'mediacodec',
       TelevisionDecoder.hardware ||
       TelevisionDecoder.hardwareSwapUv when Platform.isAndroid =>
         'mediacodec-copy',
@@ -749,8 +808,10 @@ class PlaybackSession extends ChangeNotifier {
       await platform.setProperty('video-sync', 'audio');
       await platform.setProperty('framedrop', 'vo');
       await platform.setProperty(
-        'vf',
-        decoder == TelevisionDecoder.hardwareSwapUv ? 'lavfi=[swapuv]' : '',
+        'glsl-shaders',
+        decoder == TelevisionDecoder.hardwareSwapUv
+            ? await _swapChromaShader()
+            : '',
       );
     }
     await platform.setProperty(
@@ -1517,6 +1578,10 @@ class PlaybackSession extends ChangeNotifier {
       DiaryService.add('[Play] 应用不可见，后台继续播放');
     }
     if (!Platform.isIOS) return;
+    if (visible) {
+      _dropStandby();
+      _preloader.clear();
+    }
     for (final target in [_player, ?_standby]) {
       final platform = target.platform;
       if (platform is! NativePlayer) continue;
